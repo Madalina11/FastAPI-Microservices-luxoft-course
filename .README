@@ -1,0 +1,514 @@
+# 3.1 Migrate to PostgreSQL with SQLAlchemy
+
+## Objective
+
+In this exercise, you will migrate the question-service from TinyDB to PostgreSQL:
+- Set up PostgreSQL database in Docker Compose
+- Create SQLAlchemy ORM models
+- Configure async database connection
+- Implement CRUD operations with async SQLAlchemy
+- Understand the differences between TinyDB and PostgreSQL approaches
+
+## Prerequisites
+
+- Completed Exercise 2.1 (Docker Compose)
+
+## Background
+
+### Why Migrate from TinyDB?
+
+TinyDB served us well for learning and prototyping:
+- ✅ Simple JSON-based storage
+- ✅ No setup required
+- ✅ Easy to understand
+
+However, production applications need PostgreSQL:
+- **ACID transactions**: Data integrity even during concurrent operations
+- **Concurrent access**: Multiple clients without data corruption
+- **Advanced querying**: Complex filters, joins, aggregations
+- **Data constraints**: Foreign keys, unique constraints, check constraints
+- **Scalability**: Handle millions of records efficiently
+
+### SQLAlchemy ORM
+
+SQLAlchemy maps Python classes to database tables:
+
+**TinyDB approach** (documents):
+```python
+{
+    "id": "abc123",
+    "topic": "Docker",
+    "question": "What is a container?"
+}
+```
+
+**SQLAlchemy approach** (objects):
+```python
+class Question(Base):
+    __tablename__ = "questions"
+    id = Column(String, primary_key=True)
+    topic = Column(String, nullable=False)
+    question = Column(Text, nullable=False)
+```
+
+### Async SQLAlchemy
+
+FastAPI is async, so we use async SQLAlchemy:
+- Non-blocking database I/O
+- Handle thousands of concurrent requests
+- Better performance under load
+
+**Sync** (blocks thread):
+```python
+result = session.query(Question).all()
+```
+
+**Async** (non-blocking):
+```python
+result = await session.execute(select(Question))
+questions = result.scalars().all()
+```
+
+## Project Structure
+
+You will work with this structure:
+
+```
+question-service/                      
+├── docker-compose.yaml                # UPDATE: Add PostgreSQL service
+└── question/                          
+    ├── Dockerfile                     
+    ├── requirements.txt               # UPDATE: Remove `tinydb`, add sqlalchemy, asyncpg, alembic
+    ├── main.py                        # UPDATE: Change all ops to async SQLAlchemy instead of TinyDB
+    ├── models/                        # NEW: SQLAlchemy ORM models
+    │   └── question.py                # NEW: Define Question ORM class
+    ├── database/                      
+    │   └── question.py                # REPLACED: Async engine instead of TinyDB
+    └── schemas/                       
+        └── question.py                
+```
+
+## Tasks
+
+### Task 1: Explore the starter code
+
+Before starting, understand what's provided and what you need to implement.
+
+#### 1.1 Review the complete files
+
+**`requirements.txt`** :
+```
+fastapi==0.111.1
+uvicorn==0.23.2
+asyncpg==0.30.0      # NEW: Async PostgreSQL driver
+greenlet==3.2.4      # NEW: Needed for async → sync bridging
+SQLAlchemy==2.0.44   # NEW: ORM framework
+alembic==1.17.1      # NEW: Database migrations (will use in Exercise 3.4)
+psycopg2-binary==2.9.11  # NEW: Sync PostgreSQL driver for Alembic (Exercise 3.4)
+```
+
+**[database/question.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/database/question.py)** :
+
+This file sets up the async database connection:
+
+**Key concepts:**
+- `DATABASE_URL`: Connection string with asyncpg driver
+- `engine`: Manages database connections and pooling
+- `AsyncSessionLocal`: Factory for creating sessions
+- `init_db()`: Creates tables from ORM models
+- `get_async_session()`: FastAPI dependency that provides sessions to endpoints
+
+**[schemas/question.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/schemas/question.py)** (same as Exercise 1.2):
+
+Pydantic models are unchanged - they still validate API requests/responses.
+
+**Important**: We now have TWO model layers:
+- **Pydantic models** (`schemas/`): API validation, serialization (QuestionSchema)
+- **SQLAlchemy models** (`models/`): Database tables, ORM (QuestionORM)
+
+**[main.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/main.py)**:
+- All imports ready
+- Startup event handler calls `init_db()`
+- Reference implementations: GET by ID, UPDATE
+- TODOs: CREATE, READ ALL, DELETE
+
+#### 1.2 What you need to implement
+
+**In [models/question.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/models/question.py) (TODO #1):**
+- Complete the `Question` ORM model by adding the remaining columns
+
+**In [main.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/main.py) (TODOs #2-4):**
+- CREATE endpoint (POST /questions/)
+- READ ALL endpoint (GET /questions/)
+- DELETE endpoint (DELETE /questions/{question_id})
+
+### Task 2: Set up Docker Compose with PostgreSQL
+
+Create `docker-compose.yaml` at the project root:
+
+```yaml
+services:
+  question-db:
+    image: postgres:16
+    container_name: question-db
+    environment:
+      POSTGRES_USER: quest_usr
+      POSTGRES_PASSWORD: quest_pswd
+      POSTGRES_DB: questions_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quest_usr -d questions_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  question-service:
+    build: ./question
+    container_name: question-srv
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./question:/app
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://quest_usr:quest_pswd@question-db:5432/questions_db
+    depends_on:
+      question-db:
+        condition: service_healthy
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres-data:
+```
+
+**Understanding the PostgreSQL service:**
+
+- `image: postgres:16`: Official PostgreSQL 16 image
+- `POSTGRES_USER/PASSWORD/DB`: Database credentials
+- `ports`: Expose 5432 for database access (optional, useful for debugging)
+- `postgres-data`: Named volume for data persistence
+- `healthcheck`: Ensures database is ready before starting question-service
+
+**Understanding the depends_on condition:**
+
+```yaml
+depends_on:
+  question-db:
+    condition: service_healthy
+```
+
+This ensures question-service only starts after PostgreSQL is ready to accept connections.
+
+### Task 3: Complete the SQLAlchemy ORM Model
+
+Open [models/question.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/models/question.py) and complete the `Question` class.
+
+The file already provides:
+- The class definition with `__tablename__ = "questions"`
+- First three columns as reference: `id`, `topic`, `name`
+
+**Your task:** Add the remaining columns following the same pattern.
+
+**Column types guide:**
+
+| Field | SQLAlchemy Type | Example |
+|-------|----------------|---------|
+| Short text | `Column(String, nullable=False)` | topic, name |
+| Long text | `Column(Text, nullable=False)` | question, explanation |
+| Number | `Column(Integer, nullable=False)` | correct_option |
+| JSON data | `Column(JSONB, nullable=False)` | options |
+| Timestamp | `Column(DateTime, default=datetime.utcnow)` | created_at |
+
+**JSONB for answer options:**
+
+Use PostgreSQL's JSONB type to store the list of answer options:
+
+```python
+options = Column(JSONB, nullable=False)
+# Stores: [{"num": 1, "text": "..."}, {"num": 2, "text": "..."}]
+```
+
+Benefits:
+- Stores complex nested structures
+- Faster than JSON (binary format)
+- Can be queried and indexed
+
+### Task 4: Implement CRUD Endpoints
+
+Now implement the three missing endpoints in [main.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/main.py).
+
+#### 4.1 Study the reference implementations
+
+Before implementing, review the complete examples already in [main.py](3.1.Migrate_to_PostgreSQL_with_SQLAlchemy/code/starter/main.py):
+
+**GET by ID** (REFERENCE in starter code):
+```python
+@app.get("/questions/{question_id}", response_model=QuestionSchema)
+async def get_question(question_id: str, session: AsyncSession = Depends(get_async_session)):
+  ...
+```
+
+Retrieve a single question by ID.
+
+**How it works:**
+1. `session.get(QuestionORM, question_id)` - Fastest way to fetch by primary key
+2. Checks session cache first, then queries database
+3. Returns None if not found
+4. FastAPI automatically converts ORM object to Pydantic with `response_model=QuestionSchema`
+
+**UPDATE** (REFERENCE in starter code):
+```python
+@app.put("/questions/{question_id}", response_model=QuestionSchema)
+async def update_question(question_id: str, q_update: QuestionCreate, session: AsyncSession = Depends(get_async_session)):
+  ...
+```
+
+Update an existing question.
+
+**How it works:**
+1. Fetch the existing question first
+2. Update all attributes using `setattr()` in a loop
+3. SQLAlchemy tracks changes automatically (Unit of Work pattern) - no explicit UPDATE statement needed
+4. `await session.commit()` - Persist changes to database
+5. `await session.refresh(q)` - Reload object with DB values (get updated timestamp)
+
+**TinyDB vs SQLAlchemy comparison:**
+
+| Operation | TinyDB | SQLAlchemy |
+|-----------|--------|------------|
+| Get by ID | `questions_table.get(Query.id == id)` | `await session.get(Model, id)` |
+| Update | `questions_table.update(data, Query.id == id)` | Modify object + `await session.commit()` |
+| Commit | Automatic on write | Explicit `await session.commit()` |
+
+#### 4.2 Implement CREATE endpoint
+
+Implement `POST /questions/`:
+
+**Hints:**
+- Accept `QuestionCreate` as input parameter
+- Create ORM instance: `new_q = QuestionORM(**q.dict())`
+- Add to session: `session.add(new_q)`
+- Commit: `await session.commit()`
+- Refresh: `await session.refresh(new_q)` (to get DB-generated id and created_at)
+- Return the question
+
+**Expected signature:**
+```python
+@app.post("/questions/", response_model=QuestionSchema)
+async def create_question(
+    q: QuestionCreate,
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Your implementation here
+```
+
+**Comparison with TinyDB:**
+
+| TinyDB | SQLAlchemy |
+|--------|------------|
+| `questions_table.insert(q.model_dump())` | `session.add(orm_obj)` + `await session.commit()` |
+| Auto-saves immediately | Explicit commit required |
+| No refresh needed | Must refresh to get DB values |
+
+#### 4.3 Implement READ ALL endpoint
+
+Implement `GET /questions/`:
+
+**Hints:**
+- Build query: `query = select(QuestionORM)`
+- Execute: `result = await session.execute(query)`
+- Extract results: `questions = result.scalars().all()`
+- Return list
+
+**Expected signature:**
+```python
+@app.get("/questions/", response_model=List[QuestionSchema])
+async def list_questions(
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Your implementation here
+```
+
+**Why `.scalars().all()`?**
+
+Without `.scalars()`:
+```python
+result.all()  # Returns: [(QuestionORM,), (QuestionORM,), ...]
+```
+
+With `.scalars()`:
+```python
+result.scalars().all()  # Returns: [QuestionORM, QuestionORM, ...]
+```
+
+`.scalars()` unwraps the Row tuples to give you ORM objects directly.
+
+**Comparison with TinyDB:**
+
+| TinyDB | SQLAlchemy |
+|--------|------------|
+| `questions_table.all()` | `select(Model)` + `await execute()` + `.scalars().all()` |
+| Returns list directly | Query → Execute → Extract |
+
+#### 4.4 Implement DELETE endpoint
+
+Implement `DELETE /questions/{question_id}`:
+
+**Hints:**
+- Get question: `q = await session.get(QuestionORM, question_id)`
+- Check if exists (404 if not)
+- Delete: `await session.delete(q)`
+- Commit: `await session.commit()`
+- Return `{"detail": "Question deleted"}`
+
+**Expected signature:**
+```python
+@app.delete("/questions/{question_id}")
+async def delete_question(
+    question_id: str,
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Your implementation here
+```
+
+**Comparison with TinyDB:**
+
+| TinyDB | SQLAlchemy |
+|--------|------------|
+| `questions_table.remove(Query.id == id)` | `await session.delete(obj)` + `await session.commit()` |
+| Remove by query | Delete object |
+
+### Task 5: Test the Migration
+
+#### 5.1 Start the services
+
+```bash
+docker-compose up --build
+```
+
+Watch the logs:
+- PostgreSQL should start and be healthy
+- question-service should connect and initialize tables
+- You should see: `✅ Database initialized`
+
+#### 5.2 Create a question
+
+```bash
+curl -X POST http://localhost:8000/questions/ \
+  -H "Content-Type: application/json" \
+  -d '{
+    "topic": "PostgreSQL",
+    "name": "What is ACID?",
+    "question": "What does ACID stand for in databases?",
+    "options": [
+      {"num": 1, "text": "Atomicity, Consistency, Isolation, Durability"},
+      {"num": 2, "text": "Always Commit Immediately Daily"},
+      {"num": 3, "text": "Automatic Cascading Index Database"}
+    ],
+    "correct_option": 1,
+    "explanation": "ACID properties ensure reliable transaction processing."
+  }'
+```
+
+#### 5.3 List all questions
+
+```bash
+curl http://localhost:8000/questions/
+```
+
+You should see your created question with:
+- Generated `id` (UUID)
+- Generated `created_at` timestamp
+- `updated_at` is `null`
+
+#### 5.4 Test data persistence
+
+1. Create a few questions
+2. Stop the containers: `docker-compose down`
+3. Start again: `docker-compose up`
+4. List questions - they should still exist!
+
+**Why?** The `postgres-data` named volume persists data between container restarts.
+
+#### 5.5 Try other CRUD operations
+
+Visit http://localhost:8000/docs and test update and delete operations:
+
+**Test UPDATE:**
+- Get a question ID from the list
+- Use PUT /questions/{question_id} to modify it
+- Verify the changes are reflected
+
+**Test DELETE:**
+- Delete a question using DELETE /questions/{question_id}
+- Verify it's removed from the list
+
+## Troubleshooting Guide
+
+**Issue**: Connection refused to PostgreSQL
+**Solution**:
+- Ensure PostgreSQL service is healthy: `docker-compose ps`
+- Check healthcheck: `docker-compose logs question-db`
+- Wait a few seconds for database initialization
+
+**Issue**: Table doesn't exist
+**Solution**:
+- Check `init_db()` is called in startup event
+- Verify `Base.metadata.create_all()` is executing
+- Look for errors in `docker-compose logs question-srv`
+
+**Issue**: JSONB type error
+**Solution**:
+- Import from `sqlalchemy.dialects.postgresql import JSONB`
+- Not from `sqlalchemy` directly
+
+**Issue**: Session is closed
+**Solution**:
+- Always use `session: AsyncSession = Depends(get_async_session)`
+- Don't create sessions manually
+- The dependency handles lifecycle automatically
+
+**Issue**: Object has no attribute after commit
+**Solution**:
+- Use `await session.refresh(obj)` after commit
+- Or set `expire_on_commit=False` in sessionmaker (already done in starter)
+
+## Summary
+
+You've successfully migrated from TinyDB to PostgreSQL!
+
+**What you learned:**
+- ✅ Setting up PostgreSQL in Docker Compose
+- ✅ Defining SQLAlchemy ORM models
+- ✅ Async database connection setup
+- ✅ Two-model pattern (Pydantic vs SQLAlchemy)
+- ✅ Async CRUD operations with SQLAlchemy
+- ✅ Session management with dependency injection
+- ✅ Data persistence with Docker volumes
+
+**Key takeaways:**
+1. **Two model layers**: Pydantic (API) and SQLAlchemy (DB) serve different purposes
+2. **Async is essential**: FastAPI performance requires async database operations
+3. **Explicit transactions**: Unlike TinyDB, you control when changes are committed
+4. **Dependency injection**: `Depends()` provides clean session lifecycle management
+
+**Next steps:**
+- Exercise 3.2: Add Topic model and relationships
+- Exercise 3.3: Add Alembic migrations for schema management
+
+## Verification Checklist
+
+Before moving to the next exercise, ensure:
+
+- [ ] PostgreSQL service starts and is healthy
+- [ ] question-service connects to database successfully
+- [ ] Tables are created automatically on startup
+- [ ] Can create questions via POST
+- [ ] Can list all questions via GET
+- [ ] Can get single question by ID
+- [ ] Can update questions via PUT
+- [ ] Can delete questions via DELETE
+- [ ] Data persists after container restart
+- [ ] Interactive docs work at /docs
