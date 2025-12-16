@@ -1,8 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from models.question import Question as QuestionORM
 from schemas.question import QuestionCreate, QuestionBase, Question as QuestionSchema
-from database.question import quest_db, questions_table, QuestionQuery
+from database.question import get_async_session, init_db
 from typing import List
-import json
 from datetime import datetime
 
 # -----------------------------
@@ -10,69 +12,98 @@ from datetime import datetime
 # -----------------------------
 app = FastAPI(title="Quiz Service - Questions API")
 
-@app.on_event("shutdown")
-def shutdown_db_client():
-    print("Closing TinyDB connection...")
-    quest_db.close()  # This flushes all cached data to disk
-    print("TinyDB closed.")
+@app.on_event("startup")
+async def on_startup():
+    """Initialize database tables on application startup"""
+    await init_db()
+    print("✅ Database initialized")
 
 # -----------------------------
 # CRUD Endpoints
 # -----------------------------
 
-# Create question
-@app.post("/questions/", response_model=QuestionSchema)
-def create_question(q: QuestionCreate):
-    new_q = QuestionSchema(**q.dict())
-    questions_table.insert(json.loads(new_q.json()))
-    return new_q
+# TODO: Implement CREATE endpoint
+# POST /questions/
+# - Accept QuestionCreate as input
+# - Create QuestionORM instance
+# - Add to session with session.add()
+# - Commit with await session.commit()
+# - Refresh with await session.refresh() to get DB-generated values
+# - Return the created question
 
-@app.get("/questions/", response_model=List[QuestionSchema])
-def list_questions():
-    qs = questions_table.all()
-    return qs
 
-# Get question by ID
+# TODO: Implement READ ALL endpoint
+# GET /questions/
+# - Build query with select(QuestionORM)
+# - Execute with await session.execute(query)
+# - Extract results with result.scalars().all()
+# - Return list of questions
+
+
+# Get question by ID (REFERENCE IMPLEMENTATION)
 @app.get("/questions/{question_id}", response_model=QuestionSchema)
-def get_question(question_id: str):
-    q = questions_table.get(QuestionQuery.id == question_id)
+async def get_question(
+    question_id: str,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    Retrieve a single question by ID.
+
+    Key concepts:
+    - session.get(): Fastest way to fetch by primary key
+    - Checks session cache first, then queries database
+    - Returns None if not found
+    """
+    q = await session.get(QuestionORM, question_id)
     if not q:
-        raise HTTPException(status_code=404, detail="Question not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question not found"
+        )
     return q
 
-# Update question
+
+# Update question (REFERENCE IMPLEMENTATION)
 @app.put("/questions/{question_id}", response_model=QuestionSchema)
-def update_question(question_id: str, q_update: QuestionCreate):
-    q = questions_table.get(QuestionQuery.id == question_id)
+async def update_question(
+    question_id: str,
+    q_update: QuestionCreate,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    Update an existing question.
+
+    Key concepts:
+    - Fetch the existing question first
+    - Update attributes using setattr() in a loop
+    - SQLAlchemy tracks changes automatically (Unit of Work pattern)
+    - No explicit UPDATE statement needed
+    - Commit to persist changes
+    - Refresh to get updated values from database
+    """
+    q = await session.get(QuestionORM, question_id)
     if not q:
-        raise HTTPException(status_code=404, detail="Question not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question not found"
+        )
 
-    updated = QuestionSchema(
-        **q_update.dict(),
-        id=question_id,
-        created_at=q["created_at"],
-        updated_at=datetime.utcnow()
-    )
-    questions_table.update(updated.dict(), QuestionQuery.id == question_id)
-    return updated
+    # Update all fields from request
+    for key, value in q_update.dict().items():
+        setattr(q, key, value)
 
-# Get question by ID
-@app.delete("/questions/{question_id}")
-def get_question(question_id: str):
-    q = questions_table.get(QuestionQuery.id == question_id)
-    if not q:
-        raise HTTPException(status_code=404, detail="Question not found")    
-    questions_table.remove(QuestionQuery.id == question_id)
-    return {"detail", "question deleted"}
+    # Update timestamp
+    q.updated_at = datetime.utcnow()
 
-# Flush database
-@app.post("/flush")
-def flush_db():
-    quest_db.storage.flush()
-    return {"detail": "DB flushed"}
+    await session.commit()
+    await session.refresh(q)
+    return q
 
-# Truncate quest table
-@app.post("/truncate")
-def clear_questions():
-    questions_table.truncate()
-    return {"detail": "Question table reset"}
+
+# TODO: Implement DELETE endpoint
+# DELETE /questions/{question_id}
+# - Fetch question by ID using session.get()
+# - Check if exists (return 404 if not found)
+# - Delete with await session.delete(q)
+# - Commit with await session.commit()
+# - Return success message {"detail": "Question deleted"}
