@@ -1,3 +1,7 @@
 fastapi==0.111.1
 uvicorn==0.23.2
-tinydb==4.8.0
+asyncpg==0.30.0      # NEW: Async PostgreSQL driver
+greenlet==3.2.4      # NEW: Needed for async → sync bridging
+SQLAlchemy==2.0.44   # NEW: ORM framework
+alembic==1.17.1      # NEW: Database migrations (will use in Exercise 3.4)
+psycopg2-binary==2.9.11  # NEW: Sync PostgreSQL driver for Alembic (Exercise 3.4)
