@@ -16,9 +16,9 @@ class Question(Base):
     name = Column(String, nullable=False)
 
     # TODO: Add remaining columns:
-    # - question: Text, nullable=False
-    # - options: JSONB, nullable=False
-    # - correct_option: Integer, nullable=False
-    # - explanation: Text, nullable=False
-    # - created_at: DateTime, default=datetime.utcnow
-    # - updated_at: DateTime, nullable=True
+    question = Column(Text, nullable=False)
+    options = Column(JSONB, nullable=False)
+    correct_option = Column(Integer, nullable=False)
+    explanation = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True)

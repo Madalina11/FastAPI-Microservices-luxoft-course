@@ -31,6 +31,23 @@ async def on_startup():
 # - Refresh with await session.refresh() to get DB-generated values
 # - Return the created question
 
+@app.post("/questions/", response_model=QuestionSchema, status_code=status.HTTP_201_CREATED)
+async def create_question(
+    q: QuestionCreate,
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Creează obiectul ORM din datele primite de la API
+    new_question = QuestionORM(**q.dict())
+
+    # Adaugă în sesiune și salvează în baza de date
+    session.add(new_question)
+    await session.commit()
+
+    # Reîncarcă obiectul din DB (ex. pentru created_at, id)
+    await session.refresh(new_question)
+
+    return new_question
+
 
 # TODO: Implement READ ALL endpoint
 # GET /questions/
@@ -41,26 +58,21 @@ async def on_startup():
 
 
 # Get question by ID (REFERENCE IMPLEMENTATION)
-@app.get("/questions/{question_id}", response_model=QuestionSchema)
-async def get_question(
-    question_id: str,
+@app.get("/questions/", response_model=List[QuestionSchema])
+async def list_questions(
     session: AsyncSession = Depends(get_async_session)
 ):
-    """
-    Retrieve a single question by ID.
+    # Construiește query-ul pentru toate întrebările
+    query = select(QuestionORM)
 
-    Key concepts:
-    - session.get(): Fastest way to fetch by primary key
-    - Checks session cache first, then queries database
-    - Returns None if not found
-    """
-    q = await session.get(QuestionORM, question_id)
-    if not q:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Question not found"
-        )
-    return q
+    # Rulează interogarea
+    result = await session.execute(query)
+
+    # Ia lista de obiecte ORM
+    questions = result.scalars().all()
+
+    return questions
+
 
 
 # Update question (REFERENCE IMPLEMENTATION)
@@ -107,3 +119,22 @@ async def update_question(
 # - Delete with await session.delete(q)
 # - Commit with await session.commit()
 # - Return success message {"detail": "Question deleted"}
+
+@app.delete("/questions/{question_id}")
+async def delete_question(
+    question_id: str,
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Caută întrebarea după ID
+    q = await session.get(QuestionORM, question_id)
+    if not q:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question not found"
+        )
+
+    # Șterge și confirmă în DB
+    await session.delete(q)
+    await session.commit()
+
+    return {"detail": "Question deleted"}
