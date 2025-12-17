@@ -109,6 +109,42 @@ async def create_question(
 # - Apply limit: .limit(filters.limit)
 # - Execute and return results
 
+@app.get("/questions/", response_model=List[QuestionSchema])
+async def get_questions(
+    filters: QuestionFilters = Depends(),
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    List questions, optionally filtered by topic,
+    randomized and limited in number.
+
+    Non-tehnic:
+    - filters = ce ai pus în URL (topic_id, limit, randomize)
+    - session = conexiunea la baza de date
+    """
+
+    # Pornim de la "toate întrebările"
+    query = select(QuestionORM)
+
+    # Dacă în URL a venit topic_id, filtrăm după acel topic
+    if filters.topic_id:
+        query = query.where(QuestionORM.topic_id == filters.topic_id)
+
+    # Dacă randomize = true, le amestecăm
+    if filters.randomize:
+        query = query.order_by(func.random())
+
+    # Limităm numărul de rezultate (ex: primele 10)
+    query = query.limit(filters.limit)
+
+    # Executăm query-ul în baza de date
+    result = await session.execute(query)
+
+    # Scoatem lista de obiecte QuestionORM
+    questions = result.scalars().all()
+
+    # O trimitem către client (FastAPI o convertește în schema pydantic)
+    return questions
 
 # Get question by ID (REFERENCE - unchanged from 3.1)
 @app.get("/questions/{question_id}", response_model=QuestionSchema)
