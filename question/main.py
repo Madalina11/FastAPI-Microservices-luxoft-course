@@ -1,8 +1,12 @@
 from fastapi import FastAPI, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from models.question import Question as QuestionORM
-from schemas.question import QuestionCreate, QuestionBase, Question as QuestionSchema
+from models.question import Question as QuestionORM, Topic as TopicORM
+from schemas.question import (
+    QuestionCreate, Question as QuestionSchema,
+    TopicCreate, TopicRead as TopicSchema,
+    QuestionFilters
+)
 from database.question import get_async_session, init_db
 from typing import List
 from datetime import datetime
@@ -19,80 +23,117 @@ async def on_startup():
     print("✅ Database initialized")
 
 # -----------------------------
-# CRUD Endpoints
+# Topic CRUD Endpoints
 # -----------------------------
 
-# TODO: Implement CREATE endpoint
-# POST /questions/
-# - Accept QuestionCreate as input
-# - Create QuestionORM instance
-# - Add to session with session.add()
-# - Commit with await session.commit()
-# - Refresh with await session.refresh() to get DB-generated values
-# - Return the created question
+# List all topics
+@app.get("/topics/", response_model=List[TopicSchema])
+async def get_topics(session: AsyncSession = Depends(get_async_session)):
+    result = await session.execute(select(TopicORM))
+    return result.scalars().all()
 
-@app.post("/questions/", response_model=QuestionSchema, status_code=status.HTTP_201_CREATED)
+# Create topic
+@app.post("/topics/", response_model=TopicSchema)
+async def create_topic(t: TopicCreate, session: AsyncSession = Depends(get_async_session)):
+    new_topic = TopicORM(**t.dict())
+    session.add(new_topic)
+    await session.commit()
+    await session.refresh(new_topic)
+    return new_topic
+
+
+# Delete topic by ID (REFERENCE IMPLEMENTATION)
+@app.delete("/topics/{topic_id}")
+async def delete_topic(
+    topic_id: str,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    Delete a topic by ID.
+
+    Note: This will also delete all questions associated with this topic
+    if cascade delete is configured on the relationship.
+    """
+    result = await session.execute(
+        select(TopicORM).where(TopicORM.id == topic_id)
+    )
+    topic = result.scalar_one_or_none()
+
+    if topic is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Topic not found"
+        )
+
+    await session.delete(topic)
+    await session.commit()
+    return {"detail": "Topic deleted"}
+
+
+# -----------------------------
+# Question CRUD Endpoints
+# -----------------------------
+
+# Create question (UPDATED - now requires valid topic_id)
+@app.post("/questions/", response_model=QuestionSchema)
 async def create_question(
     q: QuestionCreate,
     session: AsyncSession = Depends(get_async_session)
 ):
-    # Creează obiectul ORM din datele primite de la API
-    new_question = QuestionORM(**q.dict())
+    """
+    Create a new question.
 
-    # Adaugă în sesiune și salvează în baza de date
-    session.add(new_question)
+    Now validates that topic_id references an existing topic.
+    """
+    # Verify topic exists
+    topic = await session.get(TopicORM, q.topic_id)
+    if not topic:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Topic with id {q.topic_id} not found"
+        )
+
+    new_q = QuestionORM(**q.dict())
+    session.add(new_q)
     await session.commit()
-
-    # Reîncarcă obiectul din DB (ex. pentru created_at, id)
-    await session.refresh(new_question)
-
-    return new_question
+    await session.refresh(new_q)
+    return new_q
 
 
-# TODO: Implement READ ALL endpoint
+# TODO: Implement LIST QUESTIONS with filters endpoint
 # GET /questions/
-# - Build query with select(QuestionORM)
-# - Execute with await session.execute(query)
-# - Extract results with result.scalars().all()
-# - Return list of questions
+# - Accept QuestionFilters as dependency: filters: QuestionFilters = Depends()
+# - Build base query: select(QuestionORM)
+# - Apply filter if topic_id provided: .where(QuestionORM.topic_id == filters.topic_id)
+# - Apply randomize if requested: .order_by(func.random())
+# - Apply limit: .limit(filters.limit)
+# - Execute and return results
 
 
-# Get question by ID (REFERENCE IMPLEMENTATION)
-@app.get("/questions/", response_model=List[QuestionSchema])
-async def list_questions(
+# Get question by ID (REFERENCE - unchanged from 3.1)
+@app.get("/questions/{question_id}", response_model=QuestionSchema)
+async def get_question(
+    question_id: str,
     session: AsyncSession = Depends(get_async_session)
 ):
-    # Construiește query-ul pentru toate întrebările
-    query = select(QuestionORM)
-
-    # Rulează interogarea
-    result = await session.execute(query)
-
-    # Ia lista de obiecte ORM
-    questions = result.scalars().all()
-
-    return questions
+    """Retrieve a single question by ID"""
+    q = await session.get(QuestionORM, question_id)
+    if not q:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Question not found"
+        )
+    return q
 
 
-
-# Update question (REFERENCE IMPLEMENTATION)
+# Update question (REFERENCE - unchanged from 3.1)
 @app.put("/questions/{question_id}", response_model=QuestionSchema)
 async def update_question(
     question_id: str,
     q_update: QuestionCreate,
     session: AsyncSession = Depends(get_async_session)
 ):
-    """
-    Update an existing question.
-
-    Key concepts:
-    - Fetch the existing question first
-    - Update attributes using setattr() in a loop
-    - SQLAlchemy tracks changes automatically (Unit of Work pattern)
-    - No explicit UPDATE statement needed
-    - Commit to persist changes
-    - Refresh to get updated values from database
-    """
+    """Update an existing question"""
     q = await session.get(QuestionORM, question_id)
     if not q:
         raise HTTPException(
@@ -100,32 +141,31 @@ async def update_question(
             detail="Question not found"
         )
 
-    # Update all fields from request
+    # Verify new topic exists if topic_id is being changed
+    if q_update.topic_id != q.topic_id:
+        topic = await session.get(TopicORM, q_update.topic_id)
+        if not topic:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Topic with id {q_update.topic_id} not found"
+            )
+
     for key, value in q_update.dict().items():
         setattr(q, key, value)
 
-    # Update timestamp
     q.updated_at = datetime.utcnow()
-
     await session.commit()
     await session.refresh(q)
     return q
 
 
-# TODO: Implement DELETE endpoint
-# DELETE /questions/{question_id}
-# - Fetch question by ID using session.get()
-# - Check if exists (return 404 if not found)
-# - Delete with await session.delete(q)
-# - Commit with await session.commit()
-# - Return success message {"detail": "Question deleted"}
-
+# Delete question (REFERENCE - unchanged from 3.1)
 @app.delete("/questions/{question_id}")
 async def delete_question(
     question_id: str,
     session: AsyncSession = Depends(get_async_session)
 ):
-    # Caută întrebarea după ID
+    """Delete a question by ID"""
     q = await session.get(QuestionORM, question_id)
     if not q:
         raise HTTPException(
@@ -133,8 +173,6 @@ async def delete_question(
             detail="Question not found"
         )
 
-    # Șterge și confirmă în DB
     await session.delete(q)
     await session.commit()
-
     return {"detail": "Question deleted"}
